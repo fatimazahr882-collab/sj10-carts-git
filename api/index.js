@@ -16,4 +16,4 @@ app.get('/', (req, res) => {
     res.json({ status: "SJ10 Cart Service is Running 🛒" });
 });
 
-module.exports = app;history  }
+module.exports = app;
