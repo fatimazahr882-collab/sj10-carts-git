@@ -1,3 +1,5 @@
+// MODIFIED cartController.js with DEBUGGING LOGS
+
 const db = require('../config/database');
 const { clients } = require('../config/tursoConnection');
 
@@ -9,11 +11,16 @@ const fetchProductsFromTurso = async (productIds) => {
         try {
             const placeholders = uniqueIds.map(() => '?').join(',');
             const res = await client.execute({
-                sql: `SELECT id, title, price, discounted_price, image_urls, supplier_id FROM products WHERE id IN (${placeholders})`,
+                // Using CAST to handle potential number/string mismatches
+                sql: `SELECT id, title, price, discounted_price, image_urls, supplier_id FROM products WHERE CAST(id AS TEXT) IN (${placeholders})`,
                 args: uniqueIds
             });
             return res.rows;
-        } catch (e) { return []; }
+        } catch (e) { 
+            // Also log if a specific shard fails
+            console.error("A Turso shard failed:", e.message);
+            return []; 
+        }
     });
     return (await Promise.all(promises)).flat();
 };
@@ -21,15 +28,31 @@ const fetchProductsFromTurso = async (productIds) => {
 exports.getCart = async (req, res) => {
     try {
         const userId = req.user.id;
+        console.log(`\n--- [DEBUG] START: getCart for user ${userId} ---`);
+
         const [cartItems] = await db.carts.query("SELECT * FROM cart WHERE user_id = ? ORDER BY created_at DESC", [userId]);
-        if (cartItems.length === 0) return res.status(200).json([]);
+        
+        console.log(`[DEBUG] 1. Found ${cartItems.length} items in the MySQL cart.`);
+        // console.log('[DEBUG] Raw Cart Items:', cartItems); // Optional: uncomment to see full raw data
+
+        if (cartItems.length === 0) {
+            console.log("--- [DEBUG] END: Cart is empty. ---");
+            return res.status(200).json([]);
+        }
 
         const productIds = cartItems.map(item => item.product_id);
+        console.log('[DEBUG] 2. Extracted Product IDs to search for in Turso:', productIds);
+
         const products = await fetchProductsFromTurso(productIds);
-        const productMap = new Map(products.map(p => [p.id, p]));
+        
+        console.log(`[DEBUG] 3. Found ${products.length} matching products in Turso.`);
+        console.log('[DEBUG] Products returned from Turso:', products); // THIS IS THE MOST IMPORTANT LOG
+
+        const productMap = new Map(products.map(p => [String(p.id), p])); // Ensure keys are strings for matching
 
         const processedCart = cartItems.map(item => {
-            const product = productMap.get(item.product_id);
+            // Use String() to make sure we are comparing string-to-string
+            const product = productMap.get(String(item.product_id));
             let parsedOptions = {};
             try { if (item.options && typeof item.options === 'string') parsedOptions = JSON.parse(item.options); } catch (e) {}
 
@@ -51,8 +74,11 @@ exports.getCart = async (req, res) => {
                 options: parsedOptions,
             };
         });
+        
+        console.log("--- [DEBUG] END: Finished processing cart. ---");
         res.status(200).json(processedCart);
     } catch (error) {
+        console.error("[DEBUG] CRITICAL ERROR in getCart:", error);
         res.status(500).json({ message: "Failed to fetch cart." });
     }
 };
@@ -86,6 +112,7 @@ exports.addItemToCart = async (req, res) => {
         }
         res.status(200).json({ message: "Added to cart" });
     } catch (error) {
+        console.error("Error in addItemToCart:", error);
         res.status(500).json({ message: "Failed to add" });
     }
 };
@@ -95,6 +122,7 @@ exports.removeItemFromCart = async (req, res) => {
         await db.carts.execute("DELETE FROM cart WHERE id = ? AND user_id = ?", [req.params.cartItemId, req.user.id]);
         res.status(200).json({ message: "Removed" });
     } catch (error) {
+        console.error("Error in removeItemFromCart:", error);
         res.status(500).json({ message: "Failed" });
     }
 };
